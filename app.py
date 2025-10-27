@@ -1,3 +1,23 @@
+import streamlit as st
+from dotenv import load_dotenv
+import os
+
+# .env 파일 불러오기
+load_dotenv()
+
+# RAG 파이프라인 관련 함수들 가져오기
+# ⚠️ 만약 app.py와 rag_pipeline.py가 같은 폴더(ai/)에 있다면:
+from rag_pipeline import (
+    load_vectorstore,
+    make_answer_function
+)
+
+# ⚠️ 만약 rag_pipeline.py가 ai/ 하위 폴더에 있고 app.py는 그 바깥에 있다면:
+# from ai.rag_pipeline import (
+#     load_vectorstore,
+#     make_answer_function
+# )
+
 import os
 import random
 import pandas as pd
