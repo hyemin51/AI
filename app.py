@@ -80,15 +80,11 @@ def load_vectorstore(save_path="vectorstore"):
         allow_dangerous_deserialization=True,  # FAISS에서 필요
     )
     return vectordb
-
-
 def make_answer_function(vectordb):
     """
-    벡터스토어를 받아서, 사용자의 질문 q -> 답변 텍스트 를 돌려주는 answer_fn 을 만들어 돌려줌
-    (RetrievalQA 비슷하게 직접 구성)
+    vectordb(FAISS)에서 비슷한 청크를 직접 뽑아와서
+    LLM에 넣고 답변을 생성하는 함수(answer_fn)를 반환한다.
     """
-
-    retriever = vectordb.as_retriever(search_kwargs={"k": 3})
 
     prompt = ChatPromptTemplate.from_template(
         """너는 회계 과목 보조 강사야.
@@ -99,36 +95,37 @@ def make_answer_function(vectordb):
 사용자 질문:
 {question}
 
-문서에서 근거를 사용해서 한국어로 정확하고 쉽게 설명해줘.
+문서의 근거를 이용해서 한국어로 정확하고 쉽게 설명해줘.
 모르면 모른다고 말해. 근거 없는 내용은 지어내지 마."""
     )
 
     def answer_fn(user_question: str) -> str:
-        # 1) 관련 청크 검색
-        docs = retriever.get_relevant_documents(user_question)
+        # 1) FAISS 벡터DB에서 유사한 청크 직접 검색
+        # similarity_search(query, k=숫자)
+        docs = vectordb.similarity_search(user_question, k=3)
+
+        # 2) 검색된 청크들을 하나의 context 문자열로 묶기
         context_text = "\n\n".join([d.page_content for d in docs])
 
-        # 2) LLM 호출 준비
+        # 3) LLM 준비
         llm = ChatOpenAI(
             api_key=OPENAI_API_KEY,
             model="gpt-4o-mini",
             temperature=0.2,
         )
 
-        # 3) 프롬프트 채우기
+        # 4) 프롬프트 채우기
         filled_prompt = prompt.format(
             context=context_text,
             question=user_question,
         )
 
-        # 4) 실제 모델 호출
+        # 5) 모델 호출
         response = llm.invoke(filled_prompt)
 
-        # response는 메시지 객체일 수 있으므로 content 속성을 우선 사용
         return getattr(response, "content", str(response))
 
     return answer_fn
-
 
 # ----------------------------------------------------------------
 # Streamlit UI 시작
