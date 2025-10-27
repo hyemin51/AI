@@ -4,29 +4,136 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-# 현재 app.py가 있는 디렉토리를 Python 모듈 경로에 추가
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# LangChain / OpenAI 관련
+from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader, TextLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
 
-# --------------------------------------------------
-# 환경변수(.env or Streamlit Secrets) 로드
-# --------------------------------------------------
+# ----------------------------------------------------------------
+# 환경 변수 로드 (Streamlit Secrets 또는 .env)
+# ----------------------------------------------------------------
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# --------------------------------------------------
-# RAG 파이프라인 불러오기
-# --------------------------------------------------
-from rag_pipeline import (
-    load_docs,
-    split_docs,
-    build_vectorstore,
-    load_vectorstore,
-    make_answer_function,
-)
+# ----------------------------------------------------------------
+# RAG 유틸 함수들 (원래 rag_pipeline.py 안에 있던 내용)
+# ----------------------------------------------------------------
 
-# --------------------------------------------------
-# Streamlit 기본 설정
-# --------------------------------------------------
+def load_docs(docs_path="docs"):
+    """
+    docs 폴더 안의 pdf / txt 파일을 모두 읽어서 LangChain 문서들(list[Document])로 반환
+    """
+    docs = []
+
+    # PDF 로더
+    pdf_loader = DirectoryLoader(
+        docs_path,
+        glob="*.pdf",
+        loader_cls=PyPDFLoader,
+    )
+    docs.extend(pdf_loader.load())
+
+    # TXT 로더
+    txt_loader = DirectoryLoader(
+        docs_path,
+        glob="*.txt",
+        loader_cls=TextLoader,
+    )
+    docs.extend(txt_loader.load())
+
+    return docs
+
+
+def split_docs(documents, chunk_size=800, chunk_overlap=150):
+    """
+    긴 문서를 LLM이 다룰 수 있게 작은 청크로 분할
+    """
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=["\n\n", "\n", ".", " ", ""],
+    )
+    return splitter.split_documents(documents)
+
+
+def build_vectorstore(chunks, save_path="vectorstore"):
+    """
+    분할된 문서(chunks)를 OpenAI 임베딩으로 벡터화하고,
+    FAISS 벡터스토어로 만들고 디스크에 저장
+    """
+    embeddings = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
+    vectordb = FAISS.from_documents(chunks, embedding=embeddings)
+    vectordb.save_local(save_path)
+    return vectordb
+
+
+def load_vectorstore(save_path="vectorstore"):
+    """
+    이미 만들어둔 FAISS 벡터스토어를 디스크에서 다시 불러오기
+    """
+    embeddings = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
+    vectordb = FAISS.load_local(
+        save_path,
+        embeddings,
+        allow_dangerous_deserialization=True,  # FAISS에서 필요
+    )
+    return vectordb
+
+
+def make_answer_function(vectordb):
+    """
+    벡터스토어를 받아서, 사용자의 질문 q -> 답변 텍스트 를 돌려주는 answer_fn 을 만들어 돌려줌
+    (RetrievalQA 비슷하게 직접 구성)
+    """
+
+    retriever = vectordb.as_retriever(search_kwargs={"k": 3})
+
+    prompt = ChatPromptTemplate.from_template(
+        """너는 회계 과목 보조 강사야.
+아래는 참고할 문서 내용이야:
+
+{context}
+
+사용자 질문:
+{question}
+
+문서에서 근거를 사용해서 한국어로 정확하고 쉽게 설명해줘.
+모르면 모른다고 말해. 근거 없는 내용은 지어내지 마."""
+    )
+
+    def answer_fn(user_question: str) -> str:
+        # 1) 관련 청크 검색
+        docs = retriever.get_relevant_documents(user_question)
+        context_text = "\n\n".join([d.page_content for d in docs])
+
+        # 2) LLM 호출 준비
+        llm = ChatOpenAI(
+            api_key=OPENAI_API_KEY,
+            model="gpt-4o-mini",
+            temperature=0.2,
+        )
+
+        # 3) 프롬프트 채우기
+        filled_prompt = prompt.format(
+            context=context_text,
+            question=user_question,
+        )
+
+        # 4) 실제 모델 호출
+        response = llm.invoke(filled_prompt)
+
+        # response는 메시지 객체일 수 있으므로 content 속성을 우선 사용
+        return getattr(response, "content", str(response))
+
+    return answer_fn
+
+
+# ----------------------------------------------------------------
+# Streamlit UI 시작
+# ----------------------------------------------------------------
+
 st.set_page_config(
     page_title="나만의 회계 튜터",
     page_icon="📚",
@@ -46,9 +153,7 @@ st.write(
 
 st.markdown("---")
 
-# --------------------------------------------------
 # 세션 상태 초기화
-# --------------------------------------------------
 if "history" not in st.session_state:
     st.session_state["history"] = []
 
@@ -59,21 +164,19 @@ if "vector_ready" not in st.session_state:
     st.session_state["vector_ready"] = False
 
 # --------------------------------------------------
-# 벡터스토어 로드 OR 새로 생성
+# 벡터스토어 로드 or 새로 구축
 # --------------------------------------------------
 if not st.session_state["vector_ready"]:
     try:
-        # 이미 만들어둔 vectorstore/ 폴더를 불러오기 시도
         vectordb = load_vectorstore("vectorstore")
     except Exception:
-        # 없다면 docs 폴더에서 새로 구축
         try:
-            docs = load_docs("docs")        # docs/ 안의 pdf/txt 읽기
-            chunks = split_docs(docs)       # 문서를 청크로 나누기
+            docs = load_docs("docs")      # docs/ 안 PDF, TXT
+            chunks = split_docs(docs)     # 청크 나누기
             vectordb = build_vectorstore(
                 chunks,
                 save_path="vectorstore"
-            )                               # FAISS 저장
+            )
         except Exception as e:
             vectordb = None
             st.error(
@@ -82,13 +185,12 @@ if not st.session_state["vector_ready"]:
             )
             st.code(str(e), language="text")
 
-    # vectorstore를 제대로 얻었다면 QA 함수(answer_fn) 준비
     if vectordb is not None:
         st.session_state["answer_fn"] = make_answer_function(vectordb)
         st.session_state["vector_ready"] = True
 
 # --------------------------------------------------
-# 회계 질문 섹션
+# 회계 질문 영역
 # --------------------------------------------------
 st.markdown("## 💬 회계 질문해 보세요")
 
@@ -108,15 +210,8 @@ if ask_button:
         with st.spinner("답변 생성 중..."):
             answer_text = st.session_state["answer_fn"](user_q)
 
-        # 히스토리에 user_turn / bot_turn 추가
-        st.session_state["history"].append({
-            "role": "user",
-            "content": user_q
-        })
-        st.session_state["history"].append({
-            "role": "assistant",
-            "content": answer_text
-        })
+        st.session_state["history"].append({"role": "user", "content": user_q})
+        st.session_state["history"].append({"role": "assistant", "content": answer_text})
 
         st.markdown("#### 📌 답변")
         st.write(answer_text)
@@ -132,10 +227,6 @@ CSV_PATH = "data/accounting_bank_full.csv"
 
 @st.cache_data
 def load_question_bank(csv_path: str):
-    """
-    data/accounting_bank_full.csv 를 읽어 DataFrame으로 반환
-    필요한 컬럼만 남겨서 사용
-    """
     df = pd.read_csv(csv_path)
 
     needed_cols = [
@@ -175,7 +266,7 @@ if bank_df is None:
         st.code(load_error, language="text")
 else:
     if quiz_btn:
-        # 난이도 필터
+        # 난이도별 문제 풀에서 하나 뽑기
         if difficulty_choice == "전체":
             pool_df = bank_df
         else:
@@ -190,13 +281,11 @@ else:
             st.markdown("**❓ 문제**")
             st.write(row['question'])
 
-            # 보기 출력
             if isinstance(row['choices'], str) and row['choices'].strip():
                 st.markdown("**보기**")
                 for choice in row['choices'].split("|"):
                     st.write("- " + choice.strip())
 
-            # 정답 / 해설
             with st.expander("✅ 정답 보기 / 해설 보기"):
                 st.markdown("**정답:**")
                 st.write(row['answer'])
@@ -218,3 +307,4 @@ else:
             st.markdown(f"**🙋 사용자:** {turn['content']}")
         else:
             st.markdown(f"**🤖 챗봇:** {turn['content']}")
+
