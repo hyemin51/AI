@@ -16,13 +16,14 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # ⭐ 중요: Streamlit Cloud에서 /mount/src/ai/app.py 처럼 실행되고 있다면
 # ai.rag_pipeline 형태로 import 해야 할 수 있음.
 # 먼저 아래 버전으로 시도하세요.
-from ai.rag_pipeline import (
+from rag_pipeline import (
     load_docs,
     split_docs,
     build_vectorstore,
     load_vectorstore,
     make_answer_function,
 )
+
 
 # 만약 이 import에서 또 ImportError가 난다면 위 줄을 주석 처리하고
 # 아래 버전을 대신 살리세요 (둘 중 하나만 사용해야 함):
