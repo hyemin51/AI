@@ -1,8 +1,11 @@
-import os
+import sys, os
 import random
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+
+# 현재 app.py가 있는 디렉토리를 Python 모듈 경로에 추가
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # --------------------------------------------------
 # 환경변수(.env or Streamlit Secrets) 로드
@@ -13,9 +16,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # --------------------------------------------------
 # RAG 파이프라인 불러오기
 # --------------------------------------------------
-# ⭐ 중요: Streamlit Cloud에서 /mount/src/ai/app.py 처럼 실행되고 있다면
-# ai.rag_pipeline 형태로 import 해야 할 수 있음.
-# 먼저 아래 버전으로 시도하세요.
 from rag_pipeline import (
     load_docs,
     split_docs,
@@ -23,18 +23,6 @@ from rag_pipeline import (
     load_vectorstore,
     make_answer_function,
 )
-
-
-# 만약 이 import에서 또 ImportError가 난다면 위 줄을 주석 처리하고
-# 아래 버전을 대신 살리세요 (둘 중 하나만 사용해야 함):
-#
-# from rag_pipeline import (
-#     load_docs,
-#     split_docs,
-#     build_vectorstore,
-#     load_vectorstore,
-#     make_answer_function,
-# )
 
 # --------------------------------------------------
 # Streamlit 기본 설정
@@ -230,4 +218,3 @@ else:
             st.markdown(f"**🙋 사용자:** {turn['content']}")
         else:
             st.markdown(f"**🤖 챗봇:** {turn['content']}")
-
